@@ -3,7 +3,13 @@
 
 use std::ffi::OsString;
 
-use nom::character::complete::char;
+use nom::complete::take;
+use nom::error::ErrorKind;
+
+use nom::bytes::complete::is_not;
+use nom::character::complete::{char, digit1, space1};
+use nom::character::is_digit;
+use nom::sequence::pair;
 use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_till, take_till1, take_while_m_n},
@@ -48,15 +54,27 @@ fn get_env(input: &str) -> IResult<&str, EnvOut> {
     Ok((input, EnvOut(vec![])))
 }
 
-fn get_key_val(input: &str) -> IResult<&str, (&str, &str)> {
-    let (input, (key, val)) = separated_pair(
-        preceded(
-            wrap_ws(alt((tag("export"), space0))),
-            wrap_ws(alphanumeric1),
-        ),
-        alt((tag("="), tag(":"))),
-        wrap_ws(maybe_quote(alphanumeric1)),
-    )(input)?;
+fn getval(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
+    maybe_quote(alphanumeric1)(input)
+}
+
+fn maybe_export(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
+    alt((
+        wrap_ws(preceded(tag("export"), space1)), // Handle optional `export PATH=foo` syntax
+        space0,
+    ))(input)
+}
+
+fn getkey(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
+    delimited(
+        maybe_export,
+        preceded(does_not_start_with_number, alphnumeric_and_underscore1),
+        wrap_ws(alt((tag("="), tag(":")))),
+    )(input)
+}
+
+fn get_key_val(input: &str) -> IResult<&str, (&str, &str), EnvVarKeyError<&str>> {
+    let (input, (key, val)) = pair(getkey, wrap_ws(getval))(input)?;
 
     Ok((input, (key, val)))
 }
@@ -100,6 +118,51 @@ fn till_equal(input: &str) -> IResult<&str, &str> {
     take_till1(|c| c == '=')(input)
 }
 
+use nom::Err::Error;
+use nom::{AsChar, InputTakeAtPosition};
+
+// https://github.com/Geal/nom/blob/main/examples/custom_error.rs
+// https://users.rust-lang.org/t/nom-how-to-raise-an-error-convert-other-errors-to-nom-errors/24701
+#[derive(Debug, PartialEq)]
+pub enum EnvVarKeyError<I> {
+    CannotStartWithNumber,
+    InvalidCharacter(String),
+    Nom(I, ErrorKind),
+}
+
+impl<I> ParseError<I> for EnvVarKeyError<I> {
+    fn from_error_kind(input: I, kind: ErrorKind) -> Self {
+        EnvVarKeyError::Nom(input, kind)
+    }
+
+    fn append(_: I, _: ErrorKind, other: Self) -> Self {
+        other
+    }
+}
+
+fn does_not_start_with_number(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
+    match input.chars().next() {
+        None => Err(Error(EnvVarKeyError::CannotStartWithNumber)),
+        Some(c) => {
+            if c.is_ascii_digit() {
+                Err(Error(EnvVarKeyError::CannotStartWithNumber))
+            } else {
+                Ok((input, ""))
+            }
+        }
+    }
+}
+
+fn alphnumeric_and_underscore1(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
+    input.split_at_position1_complete(
+        |item| {
+            let c = item.as_char();
+            c != '_' && !c.is_alphanum()
+        },
+        ErrorKind::AlphaNumeric,
+    )
+}
+
 // https://github.com/Geal/nom/blob/main/doc/choosing_a_combinator.md
 
 #[cfg(test)]
@@ -107,6 +170,26 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+
+    #[test]
+    fn test_env_key() {
+        assert!(getkey("9NoNumbers=foo").is_err());
+        assert!(getkey("No.Punctuation=bar").is_err());
+        assert!(getkey("Underscore_Ok=baz").is_ok());
+    }
+
+    #[test]
+    fn test_does_not_start_with_number() {
+        assert!(does_not_start_with_number("9NoNumbers").is_err());
+        assert_eq!(
+            does_not_start_with_number("NoNumbers"),
+            Ok(("NoNumbers", ""))
+        );
+        assert_eq!(
+            does_not_start_with_number("NoNumbers9"),
+            Ok(("NoNumbers9", ""))
+        );
+    }
 
     #[test]
     fn test_get_key_val() {
@@ -118,6 +201,10 @@ mod tests {
         assert_eq!(get_key_val("a     ='b'"), Ok(("", ("a", "b"))));
         assert!(get_key_val("a     =\"b'").is_err());
         assert!(get_key_val("a     ='b\"").is_err());
+        assert_eq!(
+            get_key_val("MY_PATH=legendary"),
+            Ok(("", ("MY_PATH", "legendary")))
+        );
     }
 
     #[test]
