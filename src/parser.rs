@@ -18,9 +18,6 @@ fn get_env(input: &str) -> IResult<&str, EnvOut> {
     Ok((input, EnvOut(vec![])))
 }
 
-fn getval(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
-    maybe_quote(alphanumeric1)(input)
-}
 fn maybe_export(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
     alt((
         wrap_ws(preceded(tag("export"), space1)), // Handle optional `export PATH=foo` syntax
@@ -31,7 +28,7 @@ fn maybe_export(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
 fn getkey(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
     delimited(
         maybe_export,
-        preceded(does_not_start_with_number, alphnumeric_and_underscore1),
+        preceded(does_not_start_with_number, alphanum_plus1('_')),
         wrap_ws(alt((tag("="), tag(":")))),
     )(input)
 }
@@ -51,6 +48,10 @@ where
     F: FnMut(&'a str) -> IResult<&'a str, O, E>,
 {
     delimited(space0, inner, space0)
+}
+
+fn getval(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
+    maybe_quote(alphanumeric1)(input)
 }
 
 fn quote<'a, F: 'a + Clone, O, E: ParseError<&'a str>>(
@@ -109,14 +110,20 @@ fn does_not_start_with_number(input: &str) -> IResult<&str, &str, EnvVarParseErr
     }
 }
 
-fn alphnumeric_and_underscore1(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
-    input.split_at_position1_complete(
-        |item| {
-            let c = item.as_char();
-            c != '_' && !c.is_alphanum()
-        },
-        ErrorKind::AlphaNumeric,
-    )
+/// alphanum_plus1('_')("snake_case.here") // => Ok((".here", "snake_case"))
+/// alphanum_plus1('-')("kebab-case.here") // => Ok((".here", "kebab-case"))
+fn alphanum_plus1<'a, E: ParseError<&'a str>>(
+    plus_char: char,
+) -> impl FnMut(&'a str) -> IResult<&'a str, &'a str, E> {
+    move |input| {
+        input.split_at_position1_complete(
+            |item| {
+                let c = item.as_char();
+                c != plus_char && !c.is_alphanum()
+            },
+            ErrorKind::AlphaNumeric,
+        )
+    }
 }
 
 // https://github.com/Geal/nom/blob/main/doc/choosing_a_combinator.md
