@@ -1,51 +1,15 @@
 #![allow(dead_code)]
-#![allow(unused_imports)]
-
 use std::ffi::OsString;
 
-use nom::complete::take;
-use nom::error::ErrorKind;
-
-use nom::bytes::complete::is_not;
-use nom::character::complete::{char, digit1, space1};
-use nom::character::is_digit;
 use nom::sequence::pair;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, tag_no_case, take_till, take_till1, take_while_m_n},
-    character::complete::{alphanumeric1, anychar, multispace0, space0},
-    combinator::map_res,
-    error::ParseError,
-    multi::many1,
-    sequence::{delimited, preceded, separated_pair, tuple},
+    bytes::complete::tag,
+    character::complete::{alphanumeric1, char, space0, space1},
+    error::{ErrorKind, ParseError},
+    sequence::{delimited, preceded},
     IResult,
 };
-
-#[derive(Debug, PartialEq)]
-pub struct Color {
-    pub red: u8,
-    pub green: u8,
-    pub blue: u8,
-}
-
-fn from_hex(input: &str) -> Result<u8, std::num::ParseIntError> {
-    u8::from_str_radix(input, 16)
-}
-
-fn is_hex_digit(c: char) -> bool {
-    c.is_digit(16)
-}
-
-fn hex_primary(input: &str) -> IResult<&str, u8> {
-    map_res(take_while_m_n(2, 2, is_hex_digit), from_hex)(input)
-}
-
-fn hex_color(input: &str) -> IResult<&str, Color> {
-    let (input, _) = tag("#")(input)?;
-    let (input, (red, green, blue)) = tuple((hex_primary, hex_primary, hex_primary))(input)?;
-
-    Ok((input, Color { red, green, blue }))
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd)]
 struct EnvOut(Vec<(OsString, OsString)>);
@@ -54,18 +18,17 @@ fn get_env(input: &str) -> IResult<&str, EnvOut> {
     Ok((input, EnvOut(vec![])))
 }
 
-fn getval(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
+fn getval(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
     maybe_quote(alphanumeric1)(input)
 }
-
-fn maybe_export(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
+fn maybe_export(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
     alt((
         wrap_ws(preceded(tag("export"), space1)), // Handle optional `export PATH=foo` syntax
         space0,
     ))(input)
 }
 
-fn getkey(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
+fn getkey(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
     delimited(
         maybe_export,
         preceded(does_not_start_with_number, alphnumeric_and_underscore1),
@@ -73,7 +36,7 @@ fn getkey(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
     )(input)
 }
 
-fn get_key_val(input: &str) -> IResult<&str, (&str, &str), EnvVarKeyError<&str>> {
+fn get_key_val(input: &str) -> IResult<&str, (&str, &str), EnvVarParseError<&str>> {
     let (input, (key, val)) = pair(getkey, wrap_ws(getval))(input)?;
 
     Ok((input, (key, val)))
@@ -91,14 +54,14 @@ where
 }
 
 fn quote<'a, F: 'a + Clone, O, E: ParseError<&'a str>>(
-    inner: F,
+    input: F,
 ) -> impl FnMut(&'a str) -> IResult<&'a str, O, E>
 where
     F: Fn(&'a str) -> IResult<&'a str, O, E>,
 {
     alt((
-        delimited(char('"'), inner.clone(), char('"')),
-        delimited(char('\''), inner, char('\'')),
+        delimited(char('"'), input.clone(), char('"')),
+        delimited(char('\''), input, char('\'')),
     ))
 }
 
@@ -111,28 +74,21 @@ where
     alt((quote(inner.clone()), inner))
 }
 
-fn till_equal(input: &str) -> IResult<&str, &str> {
-    let (input, _) = space0(input)?;
-    let (input, _) = alt((tag("export"), tag("")))(input)?;
-    let (input, _) = space0(input)?;
-    take_till1(|c| c == '=')(input)
-}
-
 use nom::Err::Error;
 use nom::{AsChar, InputTakeAtPosition};
 
 // https://github.com/Geal/nom/blob/main/examples/custom_error.rs
 // https://users.rust-lang.org/t/nom-how-to-raise-an-error-convert-other-errors-to-nom-errors/24701
 #[derive(Debug, PartialEq)]
-pub enum EnvVarKeyError<I> {
+pub enum EnvVarParseError<I> {
     CannotStartWithNumber,
     InvalidCharacter(String),
     Nom(I, ErrorKind),
 }
 
-impl<I> ParseError<I> for EnvVarKeyError<I> {
+impl<I> ParseError<I> for EnvVarParseError<I> {
     fn from_error_kind(input: I, kind: ErrorKind) -> Self {
-        EnvVarKeyError::Nom(input, kind)
+        EnvVarParseError::Nom(input, kind)
     }
 
     fn append(_: I, _: ErrorKind, other: Self) -> Self {
@@ -140,12 +96,12 @@ impl<I> ParseError<I> for EnvVarKeyError<I> {
     }
 }
 
-fn does_not_start_with_number(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
+fn does_not_start_with_number(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
     match input.chars().next() {
-        None => Err(Error(EnvVarKeyError::CannotStartWithNumber)),
+        None => Err(Error(EnvVarParseError::CannotStartWithNumber)),
         Some(c) => {
             if c.is_ascii_digit() {
-                Err(Error(EnvVarKeyError::CannotStartWithNumber))
+                Err(Error(EnvVarParseError::CannotStartWithNumber))
             } else {
                 Ok((input, ""))
             }
@@ -153,7 +109,7 @@ fn does_not_start_with_number(input: &str) -> IResult<&str, &str, EnvVarKeyError
     }
 }
 
-fn alphnumeric_and_underscore1(input: &str) -> IResult<&str, &str, EnvVarKeyError<&str>> {
+fn alphnumeric_and_underscore1(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
     input.split_at_position1_complete(
         |item| {
             let c = item.as_char();
@@ -167,8 +123,6 @@ fn alphnumeric_and_underscore1(input: &str) -> IResult<&str, &str, EnvVarKeyErro
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
 
     #[test]
@@ -208,29 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_till_equal() {
-        assert_eq!(till_equal("export XP="), Ok(("=", "XP")));
-        assert_eq!(till_equal("lol="), Ok(("=", "lol")));
-        assert_eq!(till_equal("   rofl ="), Ok(("=", "rofl ")));
-    }
-
-    #[test]
     fn test_empty() {
         assert_eq!(get_env(""), Ok(("", EnvOut(vec![]))));
-    }
-
-    #[test]
-    fn test_hex() {
-        assert_eq!(
-            hex_color("#2F14DF"),
-            Ok((
-                "",
-                Color {
-                    red: 47,
-                    green: 20,
-                    blue: 223,
-                }
-            ))
-        );
     }
 }
