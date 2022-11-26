@@ -14,6 +14,12 @@ use nom::{
 #[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd)]
 struct EnvOut(Vec<(OsString, OsString)>);
 
+fn get_key_val(input: &str) -> IResult<&str, (&str, &str), EnvVarParseError<&str>> {
+    let (input, (key, val)) = pair(getkey, wrap_ws(getval))(input)?;
+
+    Ok((input, (key, val)))
+}
+
 fn get_env(input: &str) -> IResult<&str, EnvOut> {
     Ok((input, EnvOut(vec![])))
 }
@@ -28,15 +34,12 @@ fn maybe_export(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
 fn getkey(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
     delimited(
         maybe_export,
-        preceded(does_not_start_with_number, alphanum_plus1('_')),
+        preceded(
+            nom::combinator::not(nom::character::complete::digit1),
+            alphanum_plus1('_'),
+        ),
         wrap_ws(alt((tag("="), tag(":")))),
     )(input)
-}
-
-fn get_key_val(input: &str) -> IResult<&str, (&str, &str), EnvVarParseError<&str>> {
-    let (input, (key, val)) = pair(getkey, wrap_ws(getval))(input)?;
-
-    Ok((input, (key, val)))
 }
 
 /// A combinator that takes a parser `inner` and produces a parser that also consumes both leading and
@@ -48,10 +51,6 @@ where
     F: FnMut(&'a str) -> IResult<&'a str, O, E>,
 {
     delimited(space0, inner, space0)
-}
-
-fn getval(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
-    maybe_quote(alphanumeric1)(input)
 }
 
 fn quote<'a, F: 'a + Clone, O, E: ParseError<&'a str>>(
@@ -75,7 +74,6 @@ where
     alt((quote(inner.clone()), inner))
 }
 
-use nom::Err::Error;
 use nom::{AsChar, InputTakeAtPosition};
 
 // https://github.com/Geal/nom/blob/main/examples/custom_error.rs
@@ -97,19 +95,6 @@ impl<I> ParseError<I> for EnvVarParseError<I> {
     }
 }
 
-fn does_not_start_with_number(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
-    match input.chars().next() {
-        None => Err(Error(EnvVarParseError::CannotStartWithNumber)),
-        Some(c) => {
-            if c.is_ascii_digit() {
-                Err(Error(EnvVarParseError::CannotStartWithNumber))
-            } else {
-                Ok((input, ""))
-            }
-        }
-    }
-}
-
 /// alphanum_plus1('_')("snake_case.here") // => Ok((".here", "snake_case"))
 /// alphanum_plus1('-')("kebab-case.here") // => Ok((".here", "kebab-case"))
 fn alphanum_plus1<'a, E: ParseError<&'a str>>(
@@ -126,6 +111,10 @@ fn alphanum_plus1<'a, E: ParseError<&'a str>>(
     }
 }
 
+fn getval(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
+    maybe_quote(alphanumeric1)(input)
+}
+
 // https://github.com/Geal/nom/blob/main/doc/choosing_a_combinator.md
 
 #[cfg(test)]
@@ -133,23 +122,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_getval() {
+        assert_eq!(getval("'hello'"), Ok(("", "hello")));
+        assert_eq!(getval("\"hello\""), Ok(("", "hello")));
+        // assert_eq!(getval("'hello '"), Ok(("", "hello ")));
+    }
+
+    #[test]
     fn test_env_key() {
         assert!(getkey("9NoNumbers=foo").is_err());
         assert!(getkey("No.Punctuation=bar").is_err());
         assert!(getkey("Underscore_Ok=baz").is_ok());
-    }
-
-    #[test]
-    fn test_does_not_start_with_number() {
-        assert!(does_not_start_with_number("9NoNumbers").is_err());
-        assert_eq!(
-            does_not_start_with_number("NoNumbers"),
-            Ok(("NoNumbers", ""))
-        );
-        assert_eq!(
-            does_not_start_with_number("NoNumbers9"),
-            Ok(("NoNumbers9", ""))
-        );
     }
 
     #[test]
