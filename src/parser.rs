@@ -3,9 +3,9 @@
 use std::ffi::OsString;
 use std::str::FromStr;
 
-use nom::bytes::complete::is_not;
-use nom::character::complete::{line_ending, not_line_ending};
-use nom::combinator::eof;
+use nom::bytes::complete::{escaped_transform, is_not};
+use nom::character::complete::{digit1, line_ending, not_line_ending};
+use nom::combinator::{eof, not, recognize, value};
 use nom::multi::many0;
 use nom::sequence::{pair, terminated};
 use nom::{
@@ -21,7 +21,7 @@ use nom::{AsChar, InputTakeAtPosition};
 #[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd)]
 struct EnvOut(Vec<(OsString, OsString)>);
 
-fn get_key_val(input: &str) -> IResult<&str, (&str, &str)> {
+fn get_key_val(input: &str) -> IResult<&str, (&str, String)> {
     let (input, (key, val)) = pair(getkey, wrap_ws(getval))(input)?;
 
     Ok((input, (key, val)))
@@ -34,7 +34,7 @@ fn get_env(input: &str) -> IResult<&str, EnvOut> {
         .map(|(k, v)| {
             (
                 OsString::from_str(k).unwrap(),
-                OsString::from_str(v).unwrap(),
+                OsString::from_str(&v).unwrap(),
             )
         })
         .collect::<Vec<_>>();
@@ -49,14 +49,11 @@ fn maybe_export(input: &str) -> IResult<&str, &str> {
 }
 
 fn getkey(input: &str) -> IResult<&str, &str> {
-    delimited(
-        maybe_export,
-        preceded(
-            nom::combinator::not(nom::character::complete::digit1),
-            alphanum_plus1('_'),
-        ),
-        wrap_ws(tag("=")),
-    )(input)
+    let (input, _) = maybe_export(input)?;
+    let (input, _) = not(digit1)(input)?;
+    let (input, output) = terminated(alphanum_plus1('_'), wrap_ws(tag("=")))(input)?;
+
+    Ok((input, output))
 }
 
 /// A combinator that takes a parser `inner` and produces a parser that also consumes both leading and
@@ -92,34 +89,78 @@ fn not_space(s: &str) -> IResult<&str, &str> {
 }
 
 fn bash_comment(input: &str) -> IResult<&str, &str> {
-    preceded(preceded(tag("#"), not_line_ending), alt((line_ending, eof)))(input)
+    let (input, _) = tag("#")(input)?;
+    let (input, output) = not_line_ending(input)?;
+    let (input, _) = alt((line_ending, eof))(input)?;
+
+    // preceded(preceded(tag("#"), not_line_ending), alt((line_ending, eof)))(input)
+    Ok((input, output))
 }
 
 // Gets the value when there are no quotes
-fn getval(input: &str) -> IResult<&str, &str> {
-    let (input, output) = terminated(
-        not_space,
-        preceded(space0, alt((bash_comment, line_ending, eof))),
-    )(input)?;
+fn getval(input: &str) -> IResult<&str, String> {
+    let (input, _) = space0(input)?;
+    let (input, output) = alt((get_quoted_val, get_unquoted_val))(input)?;
+    let (input, _) = space0(input)?;
+    Ok((input, output))
+}
+
+fn get_unquoted_val(input: &str) -> IResult<&str, String> {
+    let (input, output) = not_space(input)?;
+    let (input, _) = space0(input)?;
+    let (input, _) = alt((bash_comment, line_ending, eof))(input)?;
+
+    Ok((input, output.to_string()))
+}
+
+fn get_quoted_val(input: &str) -> IResult<&str, String> {
+    let (input, _) = tag("\"")(input)?;
+    let (input, output) = escaped_transform(is_not("\\\""), '\\', value("\"", tag("\"")))(input)?;
+    let (input, _) = tag("\"")(input)?;
 
     Ok((input, output))
 }
 
 // https://github.com/Geal/nom/blob/main/doc/choosing_a_combinator.md
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn test_get_quoted() {
+        assert_eq!(
+            get_quoted_val(r#""he\"llo""#),
+            Ok(("", String::from(r#"he"llo"#)))
+        );
+
+        assert_eq!(
+            get_quoted_val(r#""he\"l\"lo""#),
+            Ok(("", String::from(r#"he"l"lo"#)))
+        );
+
+        assert_eq!(
+            get_quoted_val(r#""he\"l\"lo""#),
+            Ok(("", String::from(r#"he"l"lo"#)))
+        );
+
+        assert_eq!(
+            get_quoted_val(r#""he\"l\"lo" more here"#),
+            Ok((" more here", String::from(r#"he"l"lo"#)))
+        );
+
+        assert_eq!(
+            get_quoted_val(r#""he\" lo""#),
+            Ok(("", String::from(r#"he" lo"#)))
+        );
+    }
+
+    #[test]
     fn test_getval() {
-        assert_eq!(getval("hello "), Ok(("", "hello")));
-        assert_eq!(getval("hello\n"), Ok(("", "hello")));
+        assert_eq!(getval("hello "), Ok(("", "hello".to_string())));
+        assert_eq!(getval("hello\n"), Ok(("", "hello".to_string())));
         assert!(getval("hel   lo\n").is_err());
-        assert_eq!(getval("hello # comment"), Ok(("", "hello")));
-        // assert_eq!(getval("'hello'"), Ok(("", "hello")));
-        // assert_eq!(getval("\"hello\""), Ok(("", "hello")));
-        // assert_eq!(getval("'hello '"), Ok(("", "hello ")));
+        assert_eq!(getval("hello # comment"), Ok(("", "hello".to_string())));
+        assert_eq!(getval("\"hello\""), Ok(("", "hello".to_string())));
     }
 
     #[test]
@@ -151,18 +192,32 @@ mod tests {
 
     #[test]
     fn test_get_key_val() {
-        assert_eq!(get_key_val("a=b"), Ok(("", ("a", "b"))));
-        assert_eq!(get_key_val("a=b\nb=c"), Ok(("b=c", ("a", "b"))));
-        assert_eq!(get_key_val("export a=b"), Ok(("", ("a", "b"))));
-        assert_eq!(get_key_val("        export a=b"), Ok(("", ("a", "b"))));
-        assert_eq!(get_key_val("a     =b"), Ok(("", ("a", "b"))));
-        // assert_eq!(get_key_val("a     =\"b\""), Ok(("", ("a", "b"))));
-        // assert_eq!(get_key_val("a     ='b'"), Ok(("", ("a", "b"))));
-        // assert!(get_key_val("a     =\"b'").is_err());
+        assert_eq!(get_key_val("a=b"), Ok(("", ("a", "b".to_string()))));
+        assert_eq!(get_key_val("a=b\nb=c"), Ok(("b=c", ("a", "b".to_string()))));
+        assert_eq!(get_key_val("export a=b"), Ok(("", ("a", "b".to_string()))));
+        assert_eq!(
+            get_key_val("        export a=b"),
+            Ok(("", ("a", "b".to_string())))
+        );
+        assert_eq!(get_key_val("a     =b"), Ok(("", ("a", "b".to_string()))));
+
+        let out: IResult<&str, &str> = tag("\"")("a     =\\\"b");
+        assert!(out.is_err());
+
+        assert_eq!(
+            get_key_val("a     =\"b\""),
+            Ok(("", ("a", "b".to_string())))
+        );
+        // assert_eq!(
+        //     get_key_val("a     =\\\"b"),
+        //     Ok(("", ("a", "b".to_string())))
+        // );
+
+        // assert!(get_key_val("a     =\\\"b'").is_err());
         // assert!(get_key_val("a     ='b\"").is_err());
         assert_eq!(
             get_key_val("MY_PATH=legendary"),
-            Ok(("", ("MY_PATH", "legendary")))
+            Ok(("", ("MY_PATH", "legendary".to_string())))
         );
     }
 
