@@ -1,44 +1,61 @@
 #![allow(dead_code)]
+#![allow(unused_imports)]
 use std::ffi::OsString;
+use std::str::FromStr;
 
-use nom::sequence::pair;
+use nom::bytes::complete::is_not;
+use nom::character::complete::{line_ending, not_line_ending};
+use nom::combinator::eof;
+use nom::multi::many0;
+use nom::sequence::{pair, terminated};
 use nom::{
     branch::alt,
     bytes::complete::tag,
-    character::complete::{alphanumeric1, char, space0, space1},
+    character::complete::{space0, space1},
     error::{ErrorKind, ParseError},
     sequence::{delimited, preceded},
     IResult,
 };
+use nom::{AsChar, InputTakeAtPosition};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd)]
 struct EnvOut(Vec<(OsString, OsString)>);
 
-fn get_key_val(input: &str) -> IResult<&str, (&str, &str), EnvVarParseError<&str>> {
+fn get_key_val(input: &str) -> IResult<&str, (&str, &str)> {
     let (input, (key, val)) = pair(getkey, wrap_ws(getval))(input)?;
 
     Ok((input, (key, val)))
 }
 
 fn get_env(input: &str) -> IResult<&str, EnvOut> {
-    Ok((input, EnvOut(vec![])))
+    let (input, vector) = many0(get_key_val)(input)?;
+    let vector = vector
+        .into_iter()
+        .map(|(k, v)| {
+            (
+                OsString::from_str(k).unwrap(),
+                OsString::from_str(v).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    Ok((input, EnvOut(vector)))
 }
 
-fn maybe_export(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
+fn maybe_export(input: &str) -> IResult<&str, &str> {
     alt((
         wrap_ws(preceded(tag("export"), space1)), // Handle optional `export PATH=foo` syntax
         space0,
     ))(input)
 }
 
-fn getkey(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
+fn getkey(input: &str) -> IResult<&str, &str> {
     delimited(
         maybe_export,
         preceded(
             nom::combinator::not(nom::character::complete::digit1),
             alphanum_plus1('_'),
         ),
-        wrap_ws(alt((tag("="), tag(":")))),
+        wrap_ws(tag("=")),
     )(input)
 }
 
@@ -51,48 +68,6 @@ where
     F: FnMut(&'a str) -> IResult<&'a str, O, E>,
 {
     delimited(space0, inner, space0)
-}
-
-fn quote<'a, F: 'a + Clone, O, E: ParseError<&'a str>>(
-    input: F,
-) -> impl FnMut(&'a str) -> IResult<&'a str, O, E>
-where
-    F: Fn(&'a str) -> IResult<&'a str, O, E>,
-{
-    alt((
-        delimited(char('"'), input.clone(), char('"')),
-        delimited(char('\''), input, char('\'')),
-    ))
-}
-
-fn maybe_quote<'a, F: 'a + Clone, O, E: ParseError<&'a str>>(
-    inner: F,
-) -> impl FnMut(&'a str) -> IResult<&'a str, O, E>
-where
-    F: Fn(&'a str) -> IResult<&'a str, O, E>,
-{
-    alt((quote(inner.clone()), inner))
-}
-
-use nom::{AsChar, InputTakeAtPosition};
-
-// https://github.com/Geal/nom/blob/main/examples/custom_error.rs
-// https://users.rust-lang.org/t/nom-how-to-raise-an-error-convert-other-errors-to-nom-errors/24701
-#[derive(Debug, PartialEq)]
-pub enum EnvVarParseError<I> {
-    CannotStartWithNumber,
-    InvalidCharacter(String),
-    Nom(I, ErrorKind),
-}
-
-impl<I> ParseError<I> for EnvVarParseError<I> {
-    fn from_error_kind(input: I, kind: ErrorKind) -> Self {
-        EnvVarParseError::Nom(input, kind)
-    }
-
-    fn append(_: I, _: ErrorKind, other: Self) -> Self {
-        other
-    }
 }
 
 /// alphanum_plus1('_')("snake_case.here") // => Ok((".here", "snake_case"))
@@ -111,8 +86,23 @@ fn alphanum_plus1<'a, E: ParseError<&'a str>>(
     }
 }
 
-fn getval(input: &str) -> IResult<&str, &str, EnvVarParseError<&str>> {
-    maybe_quote(alphanumeric1)(input)
+// `FOO=bar` newline terminated or EOF
+fn not_space(s: &str) -> IResult<&str, &str> {
+    is_not(" \t\r\n")(s)
+}
+
+fn bash_comment(input: &str) -> IResult<&str, &str> {
+    preceded(preceded(tag("#"), not_line_ending), alt((line_ending, eof)))(input)
+}
+
+// Gets the value when there are no quotes
+fn getval(input: &str) -> IResult<&str, &str> {
+    let (input, output) = terminated(
+        not_space,
+        preceded(space0, alt((bash_comment, line_ending, eof))),
+    )(input)?;
+
+    Ok((input, output))
 }
 
 // https://github.com/Geal/nom/blob/main/doc/choosing_a_combinator.md
@@ -123,8 +113,12 @@ mod tests {
 
     #[test]
     fn test_getval() {
-        assert_eq!(getval("'hello'"), Ok(("", "hello")));
-        assert_eq!(getval("\"hello\""), Ok(("", "hello")));
+        assert_eq!(getval("hello "), Ok(("", "hello")));
+        assert_eq!(getval("hello\n"), Ok(("", "hello")));
+        assert!(getval("hel   lo\n").is_err());
+        assert_eq!(getval("hello # comment"), Ok(("", "hello")));
+        // assert_eq!(getval("'hello'"), Ok(("", "hello")));
+        // assert_eq!(getval("\"hello\""), Ok(("", "hello")));
         // assert_eq!(getval("'hello '"), Ok(("", "hello ")));
     }
 
@@ -136,15 +130,36 @@ mod tests {
     }
 
     #[test]
+    fn test_get_env() {
+        assert_eq!(
+            get_env("a=b\nb=c"),
+            Ok((
+                "",
+                EnvOut(vec![
+                    (
+                        OsString::from_str("a").unwrap(),
+                        OsString::from_str("b").unwrap()
+                    ),
+                    (
+                        OsString::from_str("b").unwrap(),
+                        OsString::from_str("c").unwrap()
+                    )
+                ])
+            ))
+        );
+    }
+
+    #[test]
     fn test_get_key_val() {
         assert_eq!(get_key_val("a=b"), Ok(("", ("a", "b"))));
+        assert_eq!(get_key_val("a=b\nb=c"), Ok(("b=c", ("a", "b"))));
         assert_eq!(get_key_val("export a=b"), Ok(("", ("a", "b"))));
         assert_eq!(get_key_val("        export a=b"), Ok(("", ("a", "b"))));
         assert_eq!(get_key_val("a     =b"), Ok(("", ("a", "b"))));
-        assert_eq!(get_key_val("a     =\"b\""), Ok(("", ("a", "b"))));
-        assert_eq!(get_key_val("a     ='b'"), Ok(("", ("a", "b"))));
-        assert!(get_key_val("a     =\"b'").is_err());
-        assert!(get_key_val("a     ='b\"").is_err());
+        // assert_eq!(get_key_val("a     =\"b\""), Ok(("", ("a", "b"))));
+        // assert_eq!(get_key_val("a     ='b'"), Ok(("", ("a", "b"))));
+        // assert!(get_key_val("a     =\"b'").is_err());
+        // assert!(get_key_val("a     ='b\"").is_err());
         assert_eq!(
             get_key_val("MY_PATH=legendary"),
             Ok(("", ("MY_PATH", "legendary")))
