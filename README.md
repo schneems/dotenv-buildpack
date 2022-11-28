@@ -1,6 +1,77 @@
 ## Dotenv Buildpack
 
-TODO, high-level description of this buildpack
+Use locally to inject your environment variable stored locally in a `.env` file into values for use in your buildpack.
+
+## What
+
+The [12factorapp](https://12factor.net/) advocates for using environment variables to [configure](https://12factor.net/config) your application. In production this is commonly done with a secure service (such as Heroku's [config vars](https://devcenter.heroku.com/articles/config-vars)). Locally it's a little harder as environment variables will affect all processes, not just a single application.
+
+To help solve this problem the concept of storing environment variables locally in a `.env` file was popularized.
+
+- Ruby: https://github.com/bkeepers/dotenv
+- Node: https://www.npmjs.com/package/dotenv
+
+## Use
+
+Put a `.env` in the root of your project and add it to your `.gitignore`, then put whatever environment variables you want read in when you `pack build` your project in there.
+
+```
+WEB_CONCURRENCY=2
+```
+
+Build your project with your usual buildpacks, but put dotenv first:
+
+```
+pack build <my-image-name> --buildpack heroku/dotenv --buildpack <your main buildpack here> /<path>/<to>/<app>
+```
+
+If it works you'll see some logging in your build output:
+
+```
+```
+
+## Format
+
+See the following examples to understand supported `.env` syntax:
+
+### plain environment variable support:
+
+A value followed by equal and a key. Each line is a new environment variable:
+
+```
+WEB_CONCURRENCY=6
+SECRET_TOKEN=abcd-goldfish
+```
+
+You can also escape characters (such as space) with a slash:
+
+```
+SECRET_TOKEN=a\ bc
+```
+
+### environment variables starting with export:
+
+```
+export WEB_CONCURRENCY=6
+export SECRET_TOKEN=abcd-goldfish
+```
+
+### Quoted variables
+
+Supports values with multiple newlines:
+
+```
+MY_PRIVATE_KEY="----BEGIN PRIVATE KEY----
+B60qrlm
+q5a1bay
+----END PRIVATE KEY----"
+```
+
+You can also use a newline in a quote:
+
+```
+MY_PRIVATE_KEY="----BEGIN PRIVATE KEY----\nB60qrlm\nq5a1bay\n----END PRIVATE KEY----"
+```
 
 ## Detect
 
@@ -8,7 +79,7 @@ If `.env` is present it will also require `dotenv` to run itself (see build belo
 
 ## Build
 
-TODO, detailed description of the logic this buildpack uses to achieve it's high level goal.
+Reads in the contents of `.env` and makes the environment variables available for other buildpacks executed after it as well as setting runtime (launch) environment variables.
 
 ## What is a buildpack?
 

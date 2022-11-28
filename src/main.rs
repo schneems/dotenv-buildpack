@@ -54,8 +54,11 @@ impl Buildpack for DotenvBuildpack {
     // Similar to detect, this method will be called when the CNB lifecycle executes the
     // build phase (`bin/build`).
     fn build(&self, context: BuildContext<Self>) -> libcnb::Result<BuildResult, Self::Error> {
-        let _contents =
+        let contents =
             fs_err::read_to_string(context.app_dir.join(".env")).expect("Error reading .env file");
+
+        let (_, _dotenv) =
+            parser::get_env(&contents).expect("There was an error parsing your .env file");
 
         BuildResultBuilder::new().build()
     }

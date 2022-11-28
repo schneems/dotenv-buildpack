@@ -1,11 +1,11 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
+// #![allow(dead_code)]
+// #![allow(unused_imports)]
 use std::ffi::OsString;
 use std::str::FromStr;
 
 use nom::bytes::complete::{escaped_transform, is_not};
 use nom::character::complete::{digit1, line_ending, not_line_ending};
-use nom::combinator::{eof, not, recognize, value};
+use nom::combinator::{eof, not, opt, value};
 use nom::multi::many0;
 use nom::sequence::{pair, terminated};
 use nom::{
@@ -19,7 +19,7 @@ use nom::{
 use nom::{AsChar, InputTakeAtPosition};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd)]
-struct EnvOut(Vec<(OsString, OsString)>);
+pub struct EnvOut(Vec<(OsString, OsString)>);
 
 fn get_key_val(input: &str) -> IResult<&str, (&str, String)> {
     let (input, (key, val)) = pair(getkey, wrap_ws(getval))(input)?;
@@ -27,7 +27,7 @@ fn get_key_val(input: &str) -> IResult<&str, (&str, String)> {
     Ok((input, (key, val)))
 }
 
-fn get_env(input: &str) -> IResult<&str, EnvOut> {
+pub fn get_env(input: &str) -> IResult<&str, EnvOut> {
     let (input, vector) = many0(get_key_val)(input)?;
     let vector = vector
         .into_iter()
@@ -83,12 +83,9 @@ fn alphanum_plus1<'a, E: ParseError<&'a str>>(
     }
 }
 
-// `FOO=bar` newline terminated or EOF
-fn not_space(s: &str) -> IResult<&str, &str> {
-    is_not(" \t\r\n")(s)
-}
-
 fn bash_comment(input: &str) -> IResult<&str, &str> {
+    let (input, _) = opt(tag(";"))(input)?;
+    let (input, _) = space0(input)?;
     let (input, _) = tag("#")(input)?;
     let (input, output) = not_line_ending(input)?;
     let (input, _) = alt((line_ending, eof))(input)?;
@@ -97,28 +94,68 @@ fn bash_comment(input: &str) -> IResult<&str, &str> {
     Ok((input, output))
 }
 
-// Gets the value when there are no quotes
+// Gets the value. Supports simple quoted string values or escaped values with no quotes
+// does not currently support complex values of both like `hello"th ere"`
 fn getval(input: &str) -> IResult<&str, String> {
     let (input, _) = space0(input)?;
     let (input, output) = alt((get_quoted_val, get_unquoted_val))(input)?;
     let (input, _) = space0(input)?;
+
+    let (input, _) = alt((bash_comment, line_ending, eof))(input)?;
     Ok((input, output))
 }
 
 fn get_unquoted_val(input: &str) -> IResult<&str, String> {
-    let (input, output) = not_space(input)?;
-    let (input, _) = space0(input)?;
-    let (input, _) = alt((bash_comment, line_ending, eof))(input)?;
+    let (input, output) = escaped_transform(
+        is_not("\t\n\r \\;#"),
+        '\\',
+        alt((
+            value(" ", tag(" ")),
+            value("\t", tag("t")),
+            value("\n", tag("n")),
+            value("\r", tag("r")),
+            value(";", tag(";")),
+            value("#", tag("#")),
+        )),
+    )(input)?;
 
-    Ok((input, output.to_string()))
+    Ok((input, output))
 }
 
-fn get_quoted_val(input: &str) -> IResult<&str, String> {
+fn doublequote(input: &str) -> IResult<&str, String> {
     let (input, _) = tag("\"")(input)?;
-    let (input, output) = escaped_transform(is_not("\\\""), '\\', value("\"", tag("\"")))(input)?;
+
+    // Allow escaped quotes within quotes
+    //
+    // This API is tricky, but makes sense when you're used to it. Here's what's
+    // going on:
+    //
+    // The `escaped_transform` function is pulling characters until it finds as slash (`\`) or quote (`"`) i.e. `is_not("\"\\")
+    // note that `is_not` will match on any character, not just characters in that order.
+    //
+    // When one of those characters is found it checks to see if the character is the control char (`\`).
+    // If it is, the next character is passed to the parser. So if the string is `a\"` it will take
+    // "a", then stop on the slash, and pass the quote (`"`) to the transformer. This will
+    // replace the control char (shash) and the parsed character (quote) with the tag value `"`
+    //
+    // This continues until it hits an unescaped quote, this is the closing quote. It does not match the control char
+    // so it does not call the transformer and instead returns.
+    let (input, output) = escaped_transform(is_not("\"\\"), '\\', value("\"", tag("\"")))(input)?;
     let (input, _) = tag("\"")(input)?;
 
     Ok((input, output))
+}
+
+fn singlequote(input: &str) -> IResult<&str, String> {
+    let (input, _) = tag("'")(input)?;
+    let (input, output) = escaped_transform(is_not("'\\"), '\\', value("'", tag("'")))(input)?;
+    let (input, _) = tag("'")(input)?;
+
+    Ok((input, output))
+}
+
+fn get_quoted_val(input: &str) -> IResult<&str, String> {
+    alt((singlequote, doublequote))(input)
 }
 
 // https://github.com/Geal/nom/blob/main/doc/choosing_a_combinator.md
@@ -127,7 +164,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_getval_bash_chars() {
+        assert_eq!(
+            getval(r#"hello # there"#),
+            Ok(("", String::from(r#"hello"#)))
+        );
+
+        assert_eq!(
+            getval(r#"hello; # there"#),
+            Ok(("", String::from(r#"hello"#)))
+        );
+
+        assert_eq!(
+            getval(r#"hello; # there"#),
+            Ok(("", String::from(r#"hello"#)))
+        );
+
+        assert_eq!(
+            getval(r#""hello"; # there"#),
+            Ok(("", String::from(r#"hello"#)))
+        );
+    }
+    #[test]
+    fn test_get_unquoted_val_escapes_whitespace() {
+        assert_eq!(
+            get_unquoted_val(r#"hello"#),
+            Ok(("", String::from(r#"hello"#)))
+        );
+
+        assert_eq!(
+            get_unquoted_val(r#"he\ llo"#),
+            Ok(("", String::from(r#"he llo"#)))
+        );
+
+        assert_eq!(
+            get_unquoted_val(r#"he\tllo"#),
+            Ok(("", String::from("he\tllo")))
+        );
+
+        assert_eq!(
+            get_unquoted_val(r#"he\nllo"#),
+            Ok(("", String::from("he\nllo")))
+        );
+    }
+
+    #[test]
     fn test_get_quoted() {
+        assert_eq!(
+            get_quoted_val("'he\\'llo'"),
+            Ok(("", String::from("he'llo")))
+        );
         assert_eq!(
             get_quoted_val(r#""he\"llo""#),
             Ok(("", String::from(r#"he"llo"#)))
