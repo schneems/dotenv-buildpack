@@ -1,7 +1,12 @@
+use std::ffi::OsString;
+
 use libcnb::build::{BuildContext, BuildResult, BuildResultBuilder};
 use libcnb::data::build_plan::BuildPlanBuilder;
+use libcnb::data::layer_content_metadata::LayerTypes;
+use libcnb::data::layer_name;
 use libcnb::detect::{DetectContext, DetectResult, DetectResultBuilder};
 use libcnb::generic::{GenericError, GenericMetadata, GenericPlatform};
+use libcnb::layer_env::{LayerEnv, ModificationBehavior, Scope};
 use libcnb::{buildpack_main, Buildpack};
 
 mod parser;
@@ -54,11 +59,23 @@ impl Buildpack for DotenvBuildpack {
     // Similar to detect, this method will be called when the CNB lifecycle executes the
     // build phase (`bin/build`).
     fn build(&self, context: BuildContext<Self>) -> libcnb::Result<BuildResult, Self::Error> {
+        println!("---> DotEnv Buildpack");
+
         let contents =
             fs_err::read_to_string(context.app_dir.join(".env")).expect("Error reading .env file");
 
-        let (_, _dotenv) =
+        let (_, env_vector) =
             parser::get_env(&contents).expect("There was an error parsing your .env file");
+
+        for (key, value) in env_vector.iter() {
+            println!(
+                "  export {}=<{} character(s)>",
+                key.to_string_lossy(),
+                value.to_string_lossy().chars().count()
+            );
+        }
+
+        context.handle_layer(layer_name!("dotenv"), EnvOverrideLayer { env: env_vector })?;
 
         BuildResultBuilder::new().build()
     }
@@ -66,3 +83,44 @@ impl Buildpack for DotenvBuildpack {
 
 // Implements the main function and wires up the framework for the given buildpack.
 buildpack_main!(DotenvBuildpack);
+
+use libcnb::layer::{Layer, LayerResultBuilder};
+
+struct EnvOverrideLayer {
+    env: Vec<(OsString, OsString)>,
+}
+
+impl Layer for EnvOverrideLayer {
+    type Buildpack = DotenvBuildpack;
+    type Metadata = GenericMetadata;
+
+    fn types(&self) -> LayerTypes {
+        LayerTypes {
+            build: true,
+            launch: true,
+            cache: false,
+        }
+    }
+
+    fn create(
+        &self,
+        _context: &BuildContext<Self::Buildpack>,
+        _layer_path: &std::path::Path,
+    ) -> Result<libcnb::layer::LayerResult<Self::Metadata>, <Self::Buildpack as Buildpack>::Error>
+    {
+        self.env
+            .iter()
+            .fold(
+                LayerResultBuilder::new(GenericMetadata::default()),
+                |builder, (key, value)| {
+                    builder.env(LayerEnv::new().chainable_insert(
+                        Scope::All,
+                        ModificationBehavior::Override,
+                        key.clone(),
+                        value.clone(),
+                    ))
+                },
+            )
+            .build()
+    }
+}

@@ -28,7 +28,11 @@ pack build <my-image-name> --buildpack heroku/dotenv --buildpack <your main buil
 If it works you'll see some logging in your build output:
 
 ```
+---> DotEnv Buildpack
+  export WEB_CONCURRENCY=<1 character(s)>
 ```
+
+Note: The values are hidden by default. To see the full value exported use `docker run -it --rm --entrypoint='/cnb/lifecycle/launcher' <my-image-name> env` to see all parsed values.
 
 ## Format
 
@@ -79,7 +83,9 @@ If `.env` is present it will also require `dotenv` to run itself (see build belo
 
 ## Build
 
-Reads in the contents of `.env` and makes the environment variables available for other buildpacks executed after it as well as setting runtime (launch) environment variables.
+Reads in the contents of `.env` and makes the environment variables available for other buildpacks executed after it (build) as well as setting runtime (launch) environment variables.
+
+If any existing environment variable with the same name are present the values will be overwritten (override).
 
 ## What is a buildpack?
 
@@ -136,7 +142,7 @@ $ cargo libcnb package
 This will generate a compiled binary in `target/buildpack/debug/dotenv` you can use compiled buildpack along with the `pack` CLI to run run against an application. When you do that you'll generate a runable docker image.
 
 ```
-$ pack build my-image  --buildpack target/buildpack/debug/dotenv --path tests/fixtures/hello_world
+$ pack build my-image --buildpack target/buildpack/debug/dotenv --path tests/fixtures/hello_world
 ```
 
 Once you've built the image you can access it via docker:

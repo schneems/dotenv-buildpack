@@ -18,16 +18,13 @@ use nom::{
 };
 use nom::{AsChar, InputTakeAtPosition};
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash, PartialOrd)]
-pub struct EnvOut(Vec<(OsString, OsString)>);
-
 fn get_key_val(input: &str) -> IResult<&str, (&str, String)> {
     let (input, (key, val)) = pair(getkey, wrap_ws(getval))(input)?;
 
     Ok((input, (key, val)))
 }
 
-pub fn get_env(input: &str) -> IResult<&str, EnvOut> {
+pub fn get_env(input: &str) -> IResult<&str, Vec<(OsString, OsString)>> {
     let (input, vector) = many0(get_key_val)(input)?;
     let vector = vector
         .into_iter()
@@ -38,7 +35,8 @@ pub fn get_env(input: &str) -> IResult<&str, EnvOut> {
             )
         })
         .collect::<Vec<_>>();
-    Ok((input, EnvOut(vector)))
+
+    Ok((input, vector))
 }
 
 fn maybe_export(input: &str) -> IResult<&str, &str> {
@@ -262,7 +260,7 @@ mod tests {
             get_env("a=b\nb=c"),
             Ok((
                 "",
-                EnvOut(vec![
+                vec![
                     (
                         OsString::from_str("a").unwrap(),
                         OsString::from_str("b").unwrap()
@@ -271,7 +269,7 @@ mod tests {
                         OsString::from_str("b").unwrap(),
                         OsString::from_str("c").unwrap()
                     )
-                ])
+                ]
             ))
         );
     }
@@ -309,6 +307,6 @@ mod tests {
 
     #[test]
     fn test_empty() {
-        assert_eq!(get_env(""), Ok(("", EnvOut(vec![]))));
+        assert_eq!(get_env(""), Ok(("", vec![])));
     }
 }
