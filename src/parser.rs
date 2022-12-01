@@ -6,7 +6,6 @@ use std::str::FromStr;
 use nom::bytes::complete::{escaped_transform, is_not};
 use nom::character::complete::{digit1, line_ending, not_line_ending};
 use nom::combinator::{eof, not, opt, value};
-use nom::error::context;
 use nom::multi::many_till;
 use nom::sequence::{pair, terminated};
 use nom::{
@@ -27,7 +26,8 @@ fn get_key_val(input: &str) -> VerboseResult<&str, (&str, String)> {
 }
 
 pub fn get_env(input: &str) -> VerboseResult<&str, Vec<(OsString, OsString)>> {
-    let (input, (vector, _)) = many_till(get_key_val, eof)(input)?;
+    let (input, (vector, _)) =
+        context_consume_last("Could not parse .env", many_till(get_key_val, eof))(input)?;
 
     let vector = vector
         .into_iter()
@@ -51,8 +51,14 @@ fn maybe_export(input: &str) -> VerboseResult<&str, &str> {
 
 fn getkey(input: &str) -> VerboseResult<&str, &str> {
     let (input, _) = maybe_export(input)?;
-    let (input, _) = context("key cannot start with a number", not(digit1))(input)?;
-    let (input, output) = terminated(alphanum_plus1('_'), wrap_ws(tag("=")))(input)?;
+    let (input, _) = context_consume_last("key cannot start with a number", not(digit1))(input)?;
+    let (input, output) = terminated(
+        alphanum_plus1('_'),
+        wrap_ws(context_consume_last(
+            "equal char `=` must follow key",
+            tag("="),
+        )),
+    )(input)?;
 
     Ok((input, output))
 }
@@ -64,6 +70,27 @@ where
     F: FnMut(&'a str) -> VerboseResult<&'a str, O>,
 {
     delimited(space0, inner, space0)
+}
+
+/// Like `consume` but instead of adding an extra error, we replace the last error
+fn context_consume_last<'a, F: 'a, O>(
+    context: &'static str,
+    mut parser: F,
+) -> impl FnMut(&'a str) -> VerboseResult<&'a str, O>
+where
+    F: FnMut(&'a str) -> VerboseResult<&'a str, O>,
+{
+    move |input| match parser(input) {
+        Ok((i, o)) => Ok((i, o)),
+        Err(nom::Err::Incomplete(e)) => Err(nom::Err::Incomplete(e)),
+        Err(nom::Err::Error(mut e)) | Err(nom::Err::Failure(mut e)) => {
+            if let Some((error_input, _)) = e.errors.pop() {
+                e.errors
+                    .push((error_input, nom::error::VerboseErrorKind::Context(context)));
+            }
+            Err(nom::Err::Error(e))
+        }
+    }
 }
 
 /// alphanum_plus1('_')("snake_case.here") // => Ok((".here", "snake_case"))
@@ -101,7 +128,7 @@ fn getval(input: &str) -> VerboseResult<&str, String> {
 
     let (input, _) = opt(bash_comment)(input)?;
 
-    let (input, _) = context(
+    let (input, _) = context_consume_last(
         "unexpected character after value, ensure intentional whitespace is escaped",
         alt((line_ending, eof)),
     )(input)?;
@@ -144,7 +171,8 @@ fn doublequote(input: &str) -> VerboseResult<&str, String> {
     // This continues until it hits an unescaped quote, this is the closing quote. It does not match the control char
     // so it does not call the transformer and instead returns.
     let (input, output) = escaped_transform(is_not("\"\\"), '\\', value("\"", tag("\"")))(input)?;
-    let (input, _) = context("missing closing double quote `\"` in value", tag("\""))(input)?;
+    let (input, _) =
+        context_consume_last("missing closing double quote `\"` in value", tag("\""))(input)?;
 
     Ok((input, output))
 }
@@ -152,7 +180,8 @@ fn doublequote(input: &str) -> VerboseResult<&str, String> {
 fn singlequote(input: &str) -> VerboseResult<&str, String> {
     let (input, _) = tag("'")(input)?;
     let (input, output) = escaped_transform(is_not("'\\"), '\\', value("'", tag("'")))(input)?;
-    let (input, _) = context("missing closing single quote `'` in value", tag("'"))(input)?;
+    let (input, _) =
+        context_consume_last("missing closing single quote `'` in value", tag("'"))(input)?;
 
     Ok((input, output))
 }
@@ -160,32 +189,53 @@ fn singlequote(input: &str) -> VerboseResult<&str, String> {
 // https://github.com/Geal/nom/blob/main/doc/choosing_a_combinator.md
 #[cfg(test)]
 mod tests {
-    use nom::error::ErrorKind::{ManyTill, Not, Tag};
+    // use nom::error::ErrorKind::{ManyTill, Not, Tag};
     use nom::error::VerboseError;
-    use nom::error::VerboseErrorKind::{Context, Nom};
+    use nom::error::VerboseErrorKind::Context;
 
     use super::*;
 
     #[test]
     fn test_get_env_errors() {
         assert_eq!(
-            get_env("FOO='no_closing_quote"),
+            get_env("BLERG+ha"),
             Err(nom::Err::Error(VerboseError {
                 errors: vec![
-                    ("", Nom(Tag)),
-                    ("", Context("missing closing single quote `'` in value")),
-                    ("FOO='no_closing_quote", Nom(ManyTill))
+                    ("+ha", Context("equal char `=` must follow key")),
+                    ("BLERG+ha", Context("Could not parse .env"))
                 ]
             }))
         );
 
         assert_eq!(
-            get_env("1OL=bad"),
+            get_env("BLERG LOL = ha"),
             Err(nom::Err::Error(VerboseError {
                 errors: vec![
-                    ("1OL=bad", Nom(Not)),
-                    ("1OL=bad", Context("key cannot start with a number")),
-                    ("1OL=bad", Nom(ManyTill))
+                    ("LOL = ha", Context("equal char `=` must follow key")),
+                    ("BLERG LOL = ha", Context("Could not parse .env"))
+                ]
+            }))
+        );
+
+        assert_eq!(
+            get_env("FOO='no_closing_quote"),
+            Err(nom::Err::Error(VerboseError {
+                errors: vec![
+                    ("", Context("missing closing single quote `'` in value")),
+                    ("FOO='no_closing_quote", Context("Could not parse .env"))
+                ]
+            }))
+        );
+
+        assert_eq!(
+            get_env("1OL=bad_env_var_key"),
+            Err(nom::Err::Error(VerboseError {
+                errors: vec![
+                    (
+                        "1OL=bad_env_var_key",
+                        Context("key cannot start with a number")
+                    ),
+                    ("1OL=bad_env_var_key", Context("Could not parse .env"))
                 ]
             }))
         );

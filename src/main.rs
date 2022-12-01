@@ -1,14 +1,13 @@
-use std::ffi::OsString;
-
 use libcnb::build::{BuildContext, BuildResult, BuildResultBuilder};
 use libcnb::data::build_plan::BuildPlanBuilder;
-use libcnb::data::layer_content_metadata::LayerTypes;
 use libcnb::data::layer_name;
 use libcnb::detect::{DetectContext, DetectResult, DetectResultBuilder};
 use libcnb::generic::{GenericError, GenericMetadata, GenericPlatform};
-use libcnb::layer_env::{LayerEnv, ModificationBehavior, Scope};
 use libcnb::{buildpack_main, Buildpack};
 
+use crate::layers::env_override_layer::EnvOverrideLayer;
+
+mod layers;
 mod parser;
 
 pub(crate) struct DotenvBuildpack;
@@ -68,13 +67,13 @@ impl Buildpack for DotenvBuildpack {
             Ok((_, env_vector)) => env_vector,
             Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
                 println!(
-                    "error parsing `.env` file:\n{}",
+                    "Error parsing `.env` file:\n\n{}",
                     nom::error::convert_error(contents.as_str(), e)
                 );
                 std::process::exit(1);
             }
             Err(nom::Err::Incomplete(_)) => {
-                unreachable!("We are  using nom")
+                unreachable!("Internal error: We are using nom-complete everywhere and not streaming, this should never happen")
             }
         };
 
@@ -86,7 +85,7 @@ impl Buildpack for DotenvBuildpack {
             );
         }
 
-        context.handle_layer(layer_name!("dotenv"), EnvOverrideLayer { env: env_vector })?;
+        context.handle_layer(layer_name!("dotenv"), EnvOverrideLayer::new(env_vector))?;
 
         BuildResultBuilder::new().build()
     }
@@ -94,44 +93,3 @@ impl Buildpack for DotenvBuildpack {
 
 // Implements the main function and wires up the framework for the given buildpack.
 buildpack_main!(DotenvBuildpack);
-
-use libcnb::layer::{Layer, LayerResultBuilder};
-
-struct EnvOverrideLayer {
-    env: Vec<(OsString, OsString)>,
-}
-
-impl Layer for EnvOverrideLayer {
-    type Buildpack = DotenvBuildpack;
-    type Metadata = GenericMetadata;
-
-    fn types(&self) -> LayerTypes {
-        LayerTypes {
-            build: true,
-            launch: true,
-            cache: false,
-        }
-    }
-
-    fn create(
-        &self,
-        _context: &BuildContext<Self::Buildpack>,
-        _layer_path: &std::path::Path,
-    ) -> Result<libcnb::layer::LayerResult<Self::Metadata>, <Self::Buildpack as Buildpack>::Error>
-    {
-        self.env
-            .iter()
-            .fold(
-                LayerResultBuilder::new(GenericMetadata::default()),
-                |builder, (key, value)| {
-                    builder.env(LayerEnv::new().chainable_insert(
-                        Scope::All,
-                        ModificationBehavior::Override,
-                        key.clone(),
-                        value.clone(),
-                    ))
-                },
-            )
-            .build()
-    }
-}
