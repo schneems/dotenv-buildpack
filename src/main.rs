@@ -64,8 +64,19 @@ impl Buildpack for DotenvBuildpack {
         let contents =
             fs_err::read_to_string(context.app_dir.join(".env")).expect("Error reading .env file");
 
-        let (_, env_vector) =
-            parser::get_env(&contents).expect("There was an error parsing your .env file");
+        let env_vector = match parser::get_env(&contents) {
+            Ok((_, env_vector)) => env_vector,
+            Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => {
+                println!(
+                    "error parsing `.env` file:\n{}",
+                    nom::error::convert_error(contents.as_str(), e)
+                );
+                std::process::exit(1);
+            }
+            Err(nom::Err::Incomplete(_)) => {
+                unreachable!("We are  using nom")
+            }
+        };
 
         for (key, value) in env_vector.iter() {
             println!(
