@@ -77,6 +77,15 @@ You can also use a newline in a quote:
 MY_PRIVATE_KEY="----BEGIN PRIVATE KEY----\nB60qrlm\nq5a1bay\n----END PRIVATE KEY----"
 ```
 
+### Trailing comments
+
+Add context to your env vars with trailing comments:
+
+```
+WEB_CONCURRENCY=6 # sets number of processes for web app
+SECRET_TOKEN=abcd-goldfish # used to generate cryptographic hash
+```
+
 ## Detect
 
 If `.env` is present it will also require `dotenv` to run itself (see build below). This buildpack alwasys provides `dotenv`.
