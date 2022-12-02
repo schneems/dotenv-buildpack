@@ -11,6 +11,12 @@ To help solve this problem the concept of storing environment variables locally 
 - Ruby: https://github.com/bkeepers/dotenv
 - Node: https://www.npmjs.com/package/dotenv
 
+## Alternatives for setting env vars with CNBs
+
+If you want to inject environment variables you can also use `pack --env-file .env <...>` or the `project.toml` [documentation](https://buildpacks.io/docs/app-developer-guide/environment-variables). There also might be a way to specify `--env-file .env` automatically if [this RFC for a pack.toml](https://github.com/buildpacks/rfcs/pull/189) is accepted.
+
+At the time this project should work fine, but is mostly "for fun." If one of those other methods can work for your use cases, they may be more ideomatic. If you find something you can't do with those features that you prefer to do with this buildpack, then let me know so I can add it to the documentation.
+
 ## Use
 
 Put a `.env` in the root of your project and add it to your `.gitignore`, then put whatever environment variables you want read in when you `pack build` your project in there.
