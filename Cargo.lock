@@ -451,9 +451,9 @@ dependencies = [
 
 [[package]]
 name = "libcnb-data"
-version = "0.11.1"
+version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "066632abe99f4ca2de170a3c3f5946253e63c715e9b7b1a31341de883cb03246"
+checksum = "d3a065640c66df2a6e54aedbb805d264c87020937323b90eea7397108b73d3aa"
 dependencies = [
  "fancy-regex",
  "libcnb-proc-macros",
@@ -464,9 +464,9 @@ dependencies = [
 
 [[package]]
 name = "libcnb-package"
-version = "0.11.1"
+version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa1d102e9d744212b2bfe650a5012fb93609700642fde5e778dc27103fc1b26e"
+checksum = "d9ed34a92d997ad9b0666ddbcc3995191e7642ee50ffa760497d2fb3bff7c5b5"
 dependencies = [
  "cargo_metadata",
  "libcnb-data",
@@ -476,9 +476,9 @@ dependencies = [
 
 [[package]]
 name = "libcnb-proc-macros"
-version = "0.11.1"
+version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "092a9091dc629e2fafb9a24e7b9050ca3e84565f82c5a67aecaf8afa24234d32"
+checksum = "25b3879fd4fc4338421de1ec797ab5ef0abe6d0e90f843dbf3b56c25bc703ebe"
 dependencies = [
  "cargo_metadata",
  "fancy-regex",
@@ -488,9 +488,9 @@ dependencies = [
 
 [[package]]
 name = "libcnb-test"
-version = "0.11.1"
+version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "318a615aed63ac85117eb0c149105ad9ca956cd3133d11d1a83fb011941802f8"
+checksum = "5f414f5b106078d0bbb67b9e3d3bf9e21012f3a318505649e8e99c9d36d200ea"
 dependencies = [
  "bollard",
  "cargo_metadata",
