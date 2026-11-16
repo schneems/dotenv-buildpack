@@ -65,20 +65,20 @@ fn getkey(input: &str) -> VerboseResult<&str, &str> {
 
 /// A combinator that takes a parser `inner` and produces a parser that also consumes both leading and
 /// trailing whitespace, returning the output of `inner`.
-fn wrap_ws<'a, F: 'a, O>(inner: F) -> impl FnMut(&'a str) -> VerboseResult<&'a str, O>
+fn wrap_ws<'a, F, O>(inner: F) -> impl FnMut(&'a str) -> VerboseResult<&'a str, O>
 where
-    F: FnMut(&'a str) -> VerboseResult<&'a str, O>,
+    F: FnMut(&'a str) -> VerboseResult<&'a str, O> + 'a,
 {
     delimited(space0, inner, space0)
 }
 
 /// Like `consume` but instead of adding an extra error, we replace the last error
-fn context_consume_last<'a, F: 'a, O>(
+fn context_consume_last<'a, F, O>(
     context: &'static str,
     mut parser: F,
 ) -> impl FnMut(&'a str) -> VerboseResult<&'a str, O>
 where
-    F: FnMut(&'a str) -> VerboseResult<&'a str, O>,
+    F: FnMut(&'a str) -> VerboseResult<&'a str, O> + 'a,
 {
     move |input| match parser(input) {
         Ok((i, o)) => Ok((i, o)),
